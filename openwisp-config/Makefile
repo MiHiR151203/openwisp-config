@@ -21,15 +21,13 @@ define Package/openwisp-config/default
 	DEPENDS:=+curl +lua +libuci-lua +luafilesystem $(3)
 	VARIANT:=$(1)
 	PKGARCH:=all
-	MAINTAINER:=Federico Capoano <f.capoano@cineca.it>
+	MAINTAINER:=Federico Capoano <nemesis@ninux.org>
 	URL:=http://openwisp.org
 endef
 
 Package/openwisp-config-openssl=$(call Package/openwisp-config/default,openssl,OpenSSL,+ca-certificates +libopenssl)
 Package/openwisp-config-mbedtls=$(call Package/openwisp-config/default,mbedtls,mbedTLS,+ca-certificates +libmbedtls)
 Package/openwisp-config-cyassl=$(call Package/openwisp-config/default,cyassl,CyaSSL,+ca-certificates +libcyassl)
-# deprecated on recent versions of OpenWRT (>= Designated Driver) and LEDE (>= 17.01)
-Package/openwisp-config-polarssl=$(call Package/openwisp-config/default,polarssl,PolarSSL,+ca-certificates +libpolarssl)
 Package/openwisp-config-nossl=$(call Package/openwisp-config/default,nossl,No SSL)
 
 define Build/Compile
@@ -73,6 +71,10 @@ define Package/openwisp-config-$(BUILD_VARIANT)/install
 		$(1)/usr/lib/lua/openwisp/utils.lua
 
 	$(INSTALL_BIN) \
+		files/lib/openwisp/net.lua \
+		$(1)/usr/lib/lua/openwisp/net.lua
+
+	$(INSTALL_BIN) \
 		files/sbin/openwisp-store-unmanaged.lua \
 		$(1)/usr/sbin/openwisp-store-unmanaged
 
@@ -92,16 +94,14 @@ define Package/openwisp-config-$(BUILD_VARIANT)/install
 		files/sbin/openwisp-update-config.lua \
 		$(1)/usr/sbin/openwisp-update-config
 
-	$(CP) ../VERSION $(1)/etc/openwisp/
+	$(INSTALL_BIN) \
+		files/sbin/openwisp-get-address.lua \
+		$(1)/usr/sbin/openwisp-get-address
 
-	if [ "$(BUILD_VARIANT)" == "mbedtls" ] || [ "$(BUILD_VARIANT)" == "cyassl" ]; then \
-		mkdir -p $(1)/etc/ssl/certs; \
-		cat $(BUILD_DIR)/ca-certificates*/ipkg-install/usr/share/ca-certificates/*/*.crt > $(1)/etc/ssl/certs/ca-certificates.crt; \
-	fi
+	$(CP) ../VERSION $(1)/etc/openwisp/
 endef
 
 $(eval $(call BuildPackage,openwisp-config-openssl))
 $(eval $(call BuildPackage,openwisp-config-mbedtls))
 $(eval $(call BuildPackage,openwisp-config-cyassl))
-$(eval $(call BuildPackage,openwisp-config-polarssl))
 $(eval $(call BuildPackage,openwisp-config-nossl))

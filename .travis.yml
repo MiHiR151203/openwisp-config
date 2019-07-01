@@ -1,0 +1,21 @@
+# .travis.yml
+language: python
+sudo: true
+env:
+  - LUA="lua=5.1.5"
+before_install:
+  - sudo ./install-dev.sh
+
+install:
+  - pip install openwisp-utils[qa]>=0.2.1
+
+script:
+  - ./runtests
+  - |
+    if [ "$TRAVIS_PULL_REQUEST" != "false" ]; then
+      # gets commit message of last commit before pull request merge
+      COMMIT_MESSAGE=$(git log $TRAVIS_PULL_REQUEST_SHA --format=%B -n 1)
+      printf "Checking commit message:\n\n"
+      printf "$COMMIT_MESSAGE\n\n"
+      checkcommit --message "$COMMIT_MESSAGE"
+    fi

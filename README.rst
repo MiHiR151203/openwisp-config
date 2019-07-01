@@ -7,8 +7,11 @@ openwisp-config
 
 ------------
 
-`LEDE <https://lede-project.org/>`_ / `OpenWRT <https://openwrt.org/>`_ configuration agent for the new
+`OpenWRT <https://openwrt.org/>`_ configuration agent for the new
 `OpenWISP 2 Controller <https://github.com/openwisp/ansible-openwisp2>`_.
+
+**Want to help OpenWISP?** `Find out how to help us grow here
+<http://openwisp.io/docs/general/help-us.html>`_.
 
 .. image:: http://netjsonconfig.openwisp.org/en/latest/_images/openwisp.org.svg
   :target: http://openwisp.org
@@ -28,19 +31,20 @@ First run:
 
     opkg update
 
-Then install one of the `latest builds <http://downloads.openwisp.org/openwisp-config/>`_:
+Then install one of the `latest builds <http://downloads.openwisp.io/openwisp-config/>`_:
 
 .. code-block:: shell
 
     opkg install <URL>
 
-Where ``<URL>`` is the URL of the image that is suitable for your case.
+Where ``<URL>`` is the URL of the image that is suitable for your case
+(we suggest ``openssl`` or alternatively ``mbedtls``).
 
-For a list of the latest built images, take a look at `downloads.openwisp.org
-<http://downloads.openwisp.org/openwisp-config/>`_.
+For a list of the latest built images, take a look at `downloads.openwisp.io/openwisp-config/
+<http://downloads.openwisp.io/openwisp-config/>`_.
 
 **If you need to compile the package yourself**, see `Compiling openwisp-config`_
-and `Compiling a custom LEDE / OpenWRT image`_.
+and `Compiling a custom OpenWRT image`_.
 
 Once installed *openwisp-config* needs to be configured (see `Configuration options`_)
 and then started with::
@@ -65,13 +69,19 @@ UCI configuration options must go in ``/etc/config/openwisp``.
 - ``test_script``: custom test script, read more about this feature in `Configuration test`_
 - ``uuid``: unique identifier of the router configuration in the controller application
 - ``key``: key required to download the configuration
+- ``hardware_id_script``: custom script to read out a hardware id (e.g. a serial number), read more about this feature in `Hardware ID`_
+- ``hardware_id_key``: whether to use the hardware id for key generation or not, defaults to ``1``
 - ``unmanaged``: list of config sections which won't be overwritten, see `Unmanaged Configurations`_
 - ``capath``: value passed to curl ``--capath`` argument, by default is empty; see also `curl capath argument <https://curl.haxx.se/docs/manpage.html#--capath>`_
 - ``cacert``: value passed to curl ``--cacert`` argument, by default is empty; see also `curl cacert argument <https://curl.haxx.se/docs/manpage.html#--cacert>`_
 - ``connect_timeout``: value passed to curl ``--connect-timeout`` argument, defaults to ``15``; see `curl connect-timeout argument <https://curl.haxx.se/docs/manpage.html#--connect-timeout>`_
 - ``max_time``: value passed to curl ``--max-time`` argument, defaults to ``30``; see `curl connect-timeout argument <https://curl.haxx.se/docs/manpage.html#-m>`_
 - ``mac_interface``: the interface from which the MAC address is taken when performing automatic registration, defaults to ``eth0``
+- ``management_interface``: management interface name (both openwrt UCI names and
+  linux interface names are supported), it's used to collect the management interface ip address
 - ``pre_reload_hook``: path to custom executable script, see `pre-reload-hook`_
+- ``post_reload_hook``: path to custom executable script, see `post-reload-hook`_
+- ``post_registration_hook``: path to custom executable script, see `post-registration-hook`_
 
 Automatic registration
 ----------------------
@@ -81,14 +91,14 @@ the router to be unregistered and it will attempt to perform an automatic regist
 
 The automatic registration is performed only if ``shared_secret`` is correctly set.
 
-The device will choose as name one of its mac addresses, unless its hostname is not ``OpenWrt`` or ``LEDE``,
+The device will choose as name one of its mac addresses, unless its hostname is not ``OpenWrt``,
 in the latter case it will simply register itself with the current hostname.
 
 When the registration is completed, the agent will automatically set ``uuid`` and ``key``
 in ``/etc/config/openwisp``.
 
 To enable this feature by default on your firmware images, follow the procedure described in
-`Compiling a custom LEDE / OpenWRT image`_.
+`Compiling a custom OpenWRT image`_.
 
 Consistent key generation
 -------------------------
@@ -142,15 +152,30 @@ If the default test does not satisfy your needs, you can define your own tests i
 
 If the exit code of the executable script is higher than ``0`` the test will be considered failed.
 
+Hardware ID
+-----------
+
+It is possible to use a unique hardware id for device identification, for example a serial number.
+
+If ``hardware_id_script`` contains the path to an executable script, it will be used to read out the hardware
+id from the device. The hardware id will then be sent to the controller when the device is registered.
+
+If the above configuration option is set then the hardware id will also be used for generating the device key,
+instead of the mac address. If you use a hardware id script but prefer to use the mac address for key
+generation then set ``hardware_id_key`` to ``0``.
+
+For settings in ``django-netjsonconfig`` related to the hardware id, take a look at the `README <https://github.com/openwisp/django-netjsonconfig/#netjsonconfig-hardware-id-enabled>`_
+
 Unmanaged Configurations
 ------------------------
 
-In some cases it is necessary to ensure that some configuration sections won't be
+In some cases it could be necessary to ensure that some configuration sections won't be
 overwritten by the controller.
 
-These settings are called "unmanaged", in the sense that are not managed remotely.
+These settings are called "unmanaged", in the sense that they are not managed remotely.
+In the default configuration of *openwisp_config* there are no unmanaged settings.
 
-The default unmanaged settings are the following ones::
+Example unmanaged settings::
 
     config controller 'http'
             ...
@@ -166,11 +191,6 @@ In the previous example, the loopback interface, all ``led settings``, all ``swi
 directives will never be overwritten by the remote configuration and will only be editable via SSH
 or via the web interface.
 
-Disable Unmanaged Configurations
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-To disable unmanaged configurations simply remove all the ``unmanaged`` options.
-
 Hooks
 -----
 
@@ -178,6 +198,9 @@ Below are described the available hooks in *openwisp-config*.
 
 pre-reload-hook
 ^^^^^^^^^^^^^^^
+
+Defaults to ``/etc/openwisp/pre-reload-hook``; the hook is not called if the
+path does not point to an executable script file.
 
 This hook is called each time *openwisp-config* applies a configuration, but **before services are reloaded**,
 more precisely in these situations:
@@ -212,6 +235,22 @@ Complete example:
     # reload openwisp_config by using procd's convenient utility
     reload_config
 
+post-reload-hook
+^^^^^^^^^^^^^^^^
+
+Defaults to ``/etc/openwisp/post-reload-hook``; the hook is not called if the
+path does not point to an executable script file.
+
+Same as `pre_reload_hook` but with the difference that this hook is called
+after the configuration services have been reloaded.
+
+post-registration-hook
+^^^^^^^^^^^^^^^^^^^^^^
+
+Defaults to ``/etc/openwisp/post-registration-hook``;
+
+Path to an executable script that will be called after the registration is completed.
+
 Compiling openwisp-config
 -------------------------
 
@@ -220,16 +259,15 @@ There are 4 variants of *openwisp-config*:
 - **openwisp-config-openssl**: depends on *ca-certificates* and *libopenssl*
 - **openwisp-config-mbedtls**: depends on *ca-certificates* and *libmbedtls*
 - **openwisp-config-cyassl**: depends on *ca-certificates* and *libcyassl*
-- **openwisp-config-polarssl**: depends on *ca-certificates* and *libpolarssl* (**note**: polarssl
-  has been deprecated in favour of mbedtls on more recent OpenWRT and LEDE versions)
 - **openwisp-config-nossl**: doesn't depend on any SSL library and doesn't install trusted CA certificates
 
 The following procedure illustrates how to compile all the *openwisp-config* variants and their dependencies:
 
 .. code-block:: shell
 
-    git clone git://git.lede-project.org/source.git lede
-    cd lede
+    git clone https://github.com/openwrt/openwrt.git openwrt
+    cd openwrt
+    git checkout openwrt-18.06
 
     # configure feeds
     echo "src-git openwisp https://github.com/openwisp/openwisp-config.git" > feeds.conf
@@ -242,21 +280,20 @@ The following procedure illustrates how to compile all the *openwisp-config* var
     echo "CONFIG_PACKAGE_openwisp-config-openssl=y" >> .config
     echo "CONFIG_PACKAGE_openwisp-config-mbedtls=y" >> .config
     echo "CONFIG_PACKAGE_openwisp-config-cyassl=y" >> .config
-    echo "CONFIG_PACKAGE_openwisp-config-polarssl=y" >> .config
     echo "CONFIG_PACKAGE_openwisp-config-nossl=y" >> .config
     make defconfig
     make tools/install
     make toolchain/install
     make package/openwisp-config/compile
-    make package/openwisp-config/install
 
 Alternatively, you can configure your build interactively with ``make menuconfig``, in this case
 you will need to select the *openwisp-config* variant by going to ``Administration > openwisp``:
 
 .. code-block:: shell
 
-    git clone git://git.lede-project.org/source.git lede
-    cd lede
+    git clone https://github.com/openwrt/openwrt.git openwrt
+    cd openwrt
+    git checkout openwrt-18.06
 
     # configure feeds
     echo "src-git openwisp https://github.com/openwisp/openwisp-config.git" > feeds.conf
@@ -267,11 +304,11 @@ you will need to select the *openwisp-config* variant by going to ``Administrati
     # go to Administration > openwisp and select the variant you need interactively
     make -j1 V=s
 
-Compiling a custom LEDE / OpenWRT image
----------------------------------------
+Compiling a custom OpenWRT image
+--------------------------------
 
 If you are managing many devices and customizing your ``openwisp-config`` configuration by hand on
-each new device, you should switch to using a custom LEDE / OpenWRT firmware image that includes
+each new device, you should switch to using a custom OpenWRT firmware image that includes
 ``openwisp-config`` and its precompiled configuration file, this strategy has a few important benefits:
 
 * you can save yourself the effort of installing and configuring ``openwisp-config`` on each device
@@ -279,14 +316,14 @@ each new device, you should switch to using a custom LEDE / OpenWRT firmware ima
   hence saving extra time and effort to register each device on the controller app
 * if you happen to reset the firmware to initial settings, these precompiled settings will be restored as well
 
-The following procedure illustrates how to compile a custom `LEDE 17.01 <https://lede-project.org>`_
+The following procedure illustrates how to compile a custom `OpenWRT 18.06.1 <https://openwrt.org/>`_
 image with a precompiled minimal ``/etc/config/openwisp`` configuration file:
 
 .. code-block:: shell
 
-    git clone git://git.lede-project.org/source.git lede
-    cd lede
-    git checkout lede-17.01
+    git clone https://github.com/openwrt/openwrt.git openwrt
+    cd openwrt
+    git checkout openwrt-18.06
 
     # include precompiled file
     mkdir -p files/etc/config
@@ -295,15 +332,11 @@ image with a precompiled minimal ``/etc/config/openwisp`` configuration file:
         # change the values of the following 2 options
         option url 'https://openwisp2.mydomain.com'
         option shared_secret 'mysharedsecret'
-        list unmanaged 'system.@led'
-        list unmanaged 'network.loopback'
-        list unmanaged 'network.@switch'
-        list unmanaged 'network.@switch_vlan'
     EOF
 
     # configure feeds
-    cp feeds.conf.default feeds.conf
-    echo "src-git openwisp https://github.com/openwisp/openwisp-config.git" >> feeds.conf
+    echo "src-git openwisp https://github.com/openwisp/openwisp-config.git" > feeds.conf
+    cat feeds.conf.default >> feeds.conf
     ./scripts/feeds update -a
     ./scripts/feeds install -a
     # replace with your desired arch target
@@ -368,6 +401,12 @@ Alternatively, you can run specifc tests, eg::
 
     cd openwisp-config/tests/
     lua test_utils.lua -v
+
+Contributing
+------------
+
+Please read the `OpenWISP contributing guidelines
+<http://openwisp.io/docs/developer/contributing.html>`_.
 
 Changelog
 ---------

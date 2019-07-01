@@ -11,6 +11,8 @@ while [ -n "$1" ]; do
 		--key) export KEY="$2"; shift;;
 		--shared-secret) export SHARED_SECRET="$2"; shift;;
 		--consistent-key) export CONSISTENT_KEY="$2"; shift;;
+		--hardware-id-script) export HARDWARE_ID_SCRIPT="$2"; shift;;
+		--hardware-id-key) export HARDWARE_ID_KEY="$2"; shift;;
 		--merge-config) export MERGE_CONFIG="$2"; shift;;
 		--unmanaged) export UNMANAGED="$2"; shift;;
 		--test-config) export TEST_CONFIG="$2"; shift;;
@@ -20,7 +22,10 @@ while [ -n "$1" ]; do
 		--capath) export CAPATH="$2"; shift;;
 		--cacert) export CACERT="$2"; shift;;
 		--mac-interface) export MAC_INTERFACE="$2"; shift;;
+		--management-interface) export MANAGEMENT_INTERFACE="$2"; shift;;
 		--pre-reload-hook) export PRE_RELOAD_HOOK="$2"; shift;;
+		--post-reload-hook) export POST_RELOAD_HOOK="$2"; shift;;
+		--post-registration-hook) export POST_REGISTRATION_HOOK="$2"; shift;;
 		-*)
 			echo "Invalid option: $1"
 			exit 1
@@ -55,9 +60,13 @@ VERIFY_SSL=${VERIFY_SSL:-1}
 MERGE_CONFIG=${MERGE_CONFIG:-1}
 TEST_CONFIG=${TEST_CONFIG:-1}
 CONSISTENT_KEY=${CONSISTENT_KEY:-1}
+HARDWARE_ID_KEY=${HARDWARE_ID_KEY:-1}
 CONNECT_TIMEOUT=${CONNECT_TIMEOUT:-15}
 MAX_TIME=${MAX_TIME:-30}
 MAC_INTERFACE=${MAC_INTERFACE:-eth0}
+PRE_RELOAD_HOOK=${PRE_RELOAD_HOOK:-/etc/openwisp/pre-reload-hook}
+POST_RELOAD_HOOK=${POST_RELOAD_HOOK:-/etc/openwisp/post-reload-hook}
+POST_REGISTRATION_HOOK=${POST_REGISTRATION_HOOK:-/etc/openwisp/post-registration-hook}
 WORKING_DIR="/tmp/openwisp"
 BASEURL="$URL/controller"
 CONFIGURATION_ARCHIVE="$WORKING_DIR/configuration.tar.gz"
@@ -84,9 +93,19 @@ else
 	fi
 fi
 
+if [ ! -x "$HARDWARE_ID_SCRIPT" ]; then
+	HARDWARE_ID_KEY=0
+fi
+
 if [ -n "$UNMANAGED" ]; then
 	# replace commas with spaces
 	UNMANAGED=$(echo $UNMANAGED | tr ',' ' ')
+fi
+
+# if management interface is not ready, the ip will be empty but other
+# attempts at determining it will be done before the start-up is completed
+if [ -n "$MANAGEMENT_INTERFACE" ]; then
+	MANAGEMENT_IP=$(/usr/sbin/openwisp-get-address $MANAGEMENT_INTERFACE)
 fi
 
 # ensures we are dealing with the right web server
@@ -123,16 +142,33 @@ register() {
 	local model=$(cat /tmp/sysinfo/model)
 	local os=$(ubus call system board | grep description | awk -F\" '{ print $4 }')
 	local system=$(ubus call system board | grep system | awk -F\" '{ print $4 }')
+	# get hardware id if script is given
+	if [ -x "$HARDWARE_ID_SCRIPT" ]; then
+		local hardware_id=$("$HARDWARE_ID_SCRIPT")
+	else
+		local hardware_id=""
+	fi
 	# prepare POST params
 	local params="backend=$backend"
-	# generate key from macaddress + shared secret
 	if [ "$CONSISTENT_KEY" == "1" ]; then
-		local consistent_key=$(echo -n "$macaddr+$SHARED_SECRET" | md5sum | awk '{print $1}')
+		if [ -x "$HARDWARE_ID_SCRIPT" ] && [ "$HARDWARE_ID_KEY" = "1" ]; then
+			# use hardware id as base for the key
+			local keybase=$hardware_id
+		else
+			# use macaddress as base for the key
+			local keybase=$macaddr
+		fi
+		local consistent_key=$(echo -n "$keybase+$SHARED_SECRET" | md5sum | awk '{print $1}')
 		params="$params&key=$consistent_key"
+	fi
+	# add management ip in params if present
+	if [ -n "$MANAGEMENT_IP" ]; then
+		params="$params&management_ip=$MANAGEMENT_IP"
 	fi
 	$($FETCH_COMMAND --data $params \
 	                 --data-urlencode secret="$SHARED_SECRET" \
 	                 --data-urlencode name="$hostname" \
+	                 --data-urlencode hardware_id="$hardware_id" \
 	                 --data-urlencode mac_address="$macaddr" \
 	                 --data-urlencode tags="$tags" \
 	                 --data-urlencode model="$model" \
@@ -177,6 +213,11 @@ register() {
 	logger "$prefix device registered successfully as $name, id: $UUID" \
 		   -t openwisp \
 		   -p daemon.info
+	# indicates this function has been called
+	# (used by `discover_management_ip`)
+	export REGISTER_CALLED=1
+	# call post registration hook
+	post_registration_hook
 }
 
 # gets checksum from controller
@@ -223,12 +264,36 @@ configuration_changed() {
 	return 0
 }
 
-# called in `apply_configuration`
+# called in `apply_configuration` before services are reloaded
 pre_reload_hook() {
-	if [ -n "$PRE_RELOAD_HOOK" ]; then
+	if [ -x "$PRE_RELOAD_HOOK" ]; then
 		$PRE_RELOAD_HOOK
 		local exit_code=$?
 		logger "Called pre-reload-hook: $PRE_RELOAD_HOOK - exit code: $exit_code" \
+		       -t openwisp \
+		       -p daemon.info
+		return $exit_code
+	fi
+}
+
+# called in `apply_configuration` after services are reloaded
+post_reload_hook() {
+	if [ -x "$POST_RELOAD_HOOK" ]; then
+		$POST_RELOAD_HOOK
+		local exit_code=$?
+		logger "Called post-reload-hook: $POST_RELOAD_HOOK - exit code: $exit_code" \
+		       -t openwisp \
+		       -p daemon.info
+		return $exit_code
+	fi
+}
+
+# called after registration is completed
+post_registration_hook() {
+	if [ -x "$POST_REGISTRATION_HOOK" ]; then
+		$POST_REGISTRATION_HOOK
+		local exit_code=$?
+		logger "Called post-reload-hook: $POST_REGISTRATION_HOOK - exit code: $exit_code" \
 		       -t openwisp \
 		       -p daemon.info
 		return $exit_code
@@ -250,12 +315,14 @@ apply_configuration() {
 		return 1
 	fi
 	# restore unmanaged configurations
-	/usr/sbin/openwisp-restore-unmanaged
+	call_restore_unmanaged
 	# call pre-reload-hook
 	pre_reload_hook
 	# reload changes and wait $sleep_time
 	/usr/sbin/openwisp-reload-config
 	sleep $sleep_time
+	# call post-reload-hook
+	post_reload_hook
 }
 
 # report configuration status: "running" or "error"
@@ -298,6 +365,12 @@ test_configuration() {
 		       -t openwisp \
 		       -p daemon.err
 		report_status "error"
+		# if this case is triggered, the configuration may
+		# be damaged and so we need to do some clean up
+		sysupgrade -r $CONFIGURATION_BACKUP
+		logger -s "The most recent configuration backup was restored" \
+		       -t openwisp \
+		       -p daemon.info
 		return 1
 	fi
 
@@ -321,7 +394,7 @@ test_configuration() {
 		report_status "error"
 		local ret=1
 	else
-		logger "Configuration test succeded" \
+		logger "Configuration test succeeded" \
 		       -t openwisp \
 		       -p daemon.info
 		report_status "running"
@@ -354,6 +427,15 @@ call_store_unmanaged() {
 		return 0
 	fi
 	/usr/sbin/openwisp-store-unmanaged -o="$UNMANAGED"
+}
+
+# restores unmanaged configuration sections that will be merged
+# with the configuration downloaded from the controller
+call_restore_unmanaged() {
+	if [ -z "$UNMANAGED" ]; then
+		return 0
+	fi
+	/usr/sbin/openwisp-restore-unmanaged
 }
 
 # 1. removes default wifi-ifaces directive (LEDE or OpenWrt SSID)
@@ -414,9 +496,54 @@ update_configuration() {
 	rm $APPLYING_CONF
 
 	if [ "$result" == "0" ]; then
-		logger "Configuration applied succesfully" \
+		logger "Configuration applied successfully" \
 		       -t openwisp \
 		       -p daemon.info
+	fi
+}
+
+discover_management_ip(){
+	# return if not using management interface
+	if [ -z "$MANAGEMENT_INTERFACE" ]; then
+		return
+	fi
+	# if being called just after `register` was called
+	if [ -n "$REGISTER_CALLED" ]; then
+		# don't do anything now, but unset the
+		# control variable so the logic will be
+		# executed at the next iteration
+		unset REGISTER_CALLED
+		return
+	fi
+	MANAGEMENT_IP=$(/usr/sbin/openwisp-get-address $MANAGEMENT_INTERFACE)
+	# if management interface is defined but its ip could not be determined
+	# try waiting for the management interface to be ready
+	if [ -z "$MANAGEMENT_IP" ]; then
+		MAX_ATTEMPTS=3
+		for attempt in `seq $MAX_ATTEMPTS`; do
+			MANAGEMENT_IP=$(/usr/sbin/openwisp-get-address $MANAGEMENT_INTERFACE)
+
+			if [ -z "$MANAGEMENT_IP" ]; then
+				retry_after=$(expr $INTERVAL / 12)
+				logger -s "management interface not ready (attempt $attempt of $MAX_ATTEMPTS)" \
+				       -t openwisp \
+				       -p daemon.notice
+				if [ $attempt -lt $MAX_ATTEMPTS ]; then
+					sleep $retry_after
+				else
+					logger -s "could not determine ip address of management interface, giving up..." \
+					       -t openwisp \
+					       -p daemon.warning
+				fi
+			else
+				break
+			fi
+		done
+	fi
+	# add management ip to URLs if present
+	if [ -n "$MANAGEMENT_IP" ]; then
+		export CONFIGURATION_URL="$BASE_CONFIGURATION_URL&management_ip=$MANAGEMENT_IP"
+		export CHECKSUM_URL="$BASE_CHECKSUM_URL&management_ip=$MANAGEMENT_IP"
 	fi
 }
 
@@ -433,12 +560,19 @@ if [ -z "$UUID" ] || [ -z "$KEY" ]; then
 fi
 
 # these variables are evaluated here because "register()" might set UUID and KEY
-CONFIGURATION_URL="$BASEURL/download-config/$UUID/?key=$KEY"
-CHECKSUM_URL="$BASEURL/checksum/$UUID/?key=$KEY"
+BASE_CONFIGURATION_URL="$BASEURL/download-config/$UUID/?key=$KEY"
+BASE_CHECKSUM_URL="$BASEURL/checksum/$UUID/?key=$KEY"
+CONFIGURATION_URL=$BASE_CONFIGURATION_URL
+CHECKSUM_URL=$BASE_CHECKSUM_URL
 REPORT_URL="$BASEURL/report-status/$UUID/"
 
 while true
 do
+	# check management interface at each iteration
+	# (because the address may change due to
+	# configuration updates or manual reconfigurations)
+	discover_management_ip
+
 	configuration_changed
 
 	if [ "$?" == "1" ]; then
